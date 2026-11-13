@@ -1,24 +1,31 @@
 import { Capacitor } from '@capacitor/core'
 import { Directory, Filesystem } from '@capacitor/filesystem'
+import { readVault, VaultNative } from './vault'
 
 /**
  * Penyimpanan berkas BerkasSiap.
  *
- * - Di aplikasi Android (Capacitor): berkas ditulis ke folder publik
+ * - Di aplikasi Android (Capacitor) dengan vault: berkas ditulis ke folder
+ *   pilihan pengguna lewat Storage Access Framework.
+ * - Tanpa vault: berkas ditulis ke folder publik
  *   Documents/BerkasSiap/<nama-checklist>/<nama-file>.
  * - Di browser biasa: berkas disimpan di IndexedDB seperti sebelumnya.
  *
- * Data checklist (localStorage) hanya menyimpan jalur + metadata berkas,
+ * Data checklist (localStorage) hanya menyimpan jalur/URI + metadata berkas,
  * bukan isi berkasnya.
  */
 
 export const FILES_FOLDER = 'BerkasSiap'
 
 export type PhoneFile = {
-  /** Jalur relatif, contoh: BerkasSiap/KTP/ktp.pdf */
+  /** Jalur relatif, contoh: BerkasSiap/KTP/ktp.pdf atau vault:KTP/ktp.pdf */
   path: string
-  /** Folder native yang dipakai saat menyimpan. */
-  storage: 'documents' | 'external'
+  /** Lokasi native yang dipakai saat menyimpan. */
+  storage: 'documents' | 'external' | 'vault'
+  /** URI dokumen SAF, hanya untuk berkas di vault. */
+  uri?: string
+  /** Nama vault saat berkas disimpan (untuk ditampilkan). */
+  vault?: string
   name: string
   size: number
   type: string
@@ -101,6 +108,7 @@ async function existsAt(path: string, directory: Directory) {
 }
 
 async function findDirectory(path: string, storage: PhoneFile['storage']) {
+  if (storage === 'vault') return null
   for (const directory of nativeDirectories(storage)) {
     if (await existsAt(path, directory)) return directory
   }
@@ -185,7 +193,8 @@ async function deleteBrowserFile(key: string) {
 /* ------------------------------------------------------------------ */
 
 /**
- * Simpan berkas ke Documents/BerkasSiap/<nama-checklist>/<nama-file>.
+ * Simpan berkas ke vault pengguna. Jika vault belum dipilih (atau tidak bisa
+ * diakses), berkas disimpan ke Documents/BerkasSiap/<nama-checklist>/.
  * Di browser biasa, berkas disimpan ke IndexedDB.
  */
 export async function saveToPhone(
@@ -202,6 +211,35 @@ export async function saveToPhone(
       size: file.size,
       type: file.type || guessMimeType(file.name),
       savedAt: new Date().toISOString(),
+    }
+  }
+
+  const vault = readVault()
+  if (vault) {
+    const folder = sanitizeSegment(planTitle, 'Checklist')
+    const fileName = sanitizeFileName(file.name)
+    const type = file.type || guessMimeType(fileName)
+    try {
+      const saved = await VaultNative.saveFile({
+        treeUri: vault.uri,
+        folder,
+        name: fileName,
+        mimeType: type,
+        data: await blobToBase64(file),
+      })
+      return {
+        path: `vault:${folder}/${saved.name}`,
+        storage: 'vault',
+        uri: saved.uri,
+        vault: vault.name,
+        name: saved.name,
+        size: file.size,
+        type,
+        savedAt: new Date().toISOString(),
+      }
+    } catch {
+      // Vault tidak bisa diakses (izin dicabut/folder dipindah). Simpan ke
+      // folder bawaan agar berkas pengguna tidak hilang.
     }
   }
 
@@ -246,6 +284,15 @@ export async function readFromPhone(file: PhoneFile | undefined, key: string) {
     return (await getBrowserFile(key)) ?? null
   }
 
+  if (file.storage === 'vault' && file.uri) {
+    try {
+      const result = await VaultNative.readFile({ uri: file.uri })
+      return base64ToBlob(result.data, file.type || guessMimeType(file.name))
+    } catch {
+      return null
+    }
+  }
+
   const directory = await findDirectory(file.path, file.storage)
   if (!directory) return null
 
@@ -270,6 +317,15 @@ export async function deleteFromPhone(file: PhoneFile | undefined, key: string) 
     return
   }
 
+  if (file.storage === 'vault' && file.uri) {
+    try {
+      await VaultNative.deleteFile({ uri: file.uri })
+    } catch {
+      // Berkas memang sudah tidak ada.
+    }
+    return
+  }
+
   const directory = await findDirectory(file.path, file.storage)
   if (!directory) return
   try {
@@ -285,24 +341,51 @@ export async function existsOnPhone(file: PhoneFile | undefined, key: string) {
   if (!file || !file.path || file.path.startsWith('indexeddb:')) {
     return Boolean(await getBrowserFile(key))
   }
+
+  if (file.storage === 'vault' && file.uri) {
+    try {
+      return (await VaultNative.exists({ uri: file.uri })).exists
+    } catch {
+      return false
+    }
+  }
+
   return Boolean(await findDirectory(file.path, file.storage))
 }
 
 /**
- * Buka berkas yang tersimpan. Di Android berkas dibuka lewat URI lokal
- * Capacitor, di browser diunduh seperti sebelumnya.
+ * Buka berkas yang tersimpan.
+ *
+ * Di Android berkas dibuka lewat ACTION_VIEW (aplikasi penampil bawaan),
+ * sehingga BerkasSiap tetap di latar belakang dan tombol kembali tidak
+ * mengembalikan pengguna ke Beranda. Di browser berkas diunduh seperti
+ * sebelumnya.
  */
 export async function openFromPhone(
   file: PhoneFile | undefined,
   key: string,
   displayName: string,
-): Promise<'opened' | 'missing'> {
+): Promise<'opened' | 'missing' | 'unsupported'> {
   if (isNativeApp() && file && !file.path.startsWith('indexeddb:')) {
+    if (file.storage === 'vault' && file.uri) {
+      if (!(await existsOnPhone(file, key))) return 'missing'
+      try {
+        await VaultNative.openFile({ uri: file.uri, mimeType: file.type })
+        return 'opened'
+      } catch {
+        return 'unsupported'
+      }
+    }
+
     const directory = await findDirectory(file.path, file.storage)
     if (!directory) return 'missing'
-    const { uri } = await Filesystem.getUri({ path: file.path, directory })
-    window.open(Capacitor.convertFileSrc(uri), '_blank')
-    return 'opened'
+    try {
+      const { uri } = await Filesystem.getUri({ path: file.path, directory })
+      await VaultNative.openFile({ uri, mimeType: file.type })
+      return 'opened'
+    } catch {
+      return 'unsupported'
+    }
   }
 
   const blob = await readFromPhone(file, key)
@@ -319,7 +402,8 @@ export async function openFromPhone(
 
 /**
  * Ekspor/cadangan seluruh data checklist ke berkas JSON.
- * Android: Documents/BerkasSiap/cadangan-berkassiap-<tanggal>.json
+ * Android dengan vault: <vault>/cadangan-berkassiap-<tanggal>.json
+ * Android tanpa vault: Documents/BerkasSiap/cadangan-berkassiap-<tanggal>.json
  * Browser: unduhan berkas .json.
  */
 export async function exportBackup(data: unknown) {
@@ -337,8 +421,28 @@ export async function exportBackup(data: unknown) {
     return { fileName, path: fileName, storage: 'browser' as const }
   }
 
-  await requestNativePermission()
   const data64 = await blobToBase64(new Blob([content], { type: 'application/json' }))
+  const vault = readVault()
+  if (vault) {
+    try {
+      const saved = await VaultNative.saveFile({
+        treeUri: vault.uri,
+        name: fileName,
+        mimeType: 'application/json',
+        data: data64,
+      })
+      return {
+        fileName: saved.name,
+        path: `vault:${saved.name}`,
+        storage: 'vault' as const,
+        vault: vault.name,
+      }
+    } catch {
+      // Vault tidak bisa diakses: simpan ke folder bawaan.
+    }
+  }
+
+  await requestNativePermission()
   const relative = `${FILES_FOLDER}/${fileName}`
 
   for (const storage of ['documents', 'external'] as const) {

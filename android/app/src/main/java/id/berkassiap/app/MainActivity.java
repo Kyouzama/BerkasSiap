@@ -10,6 +10,9 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
+        // Plugin lokal untuk vault (pemilih folder + baca/tulis berkas SAF).
+        registerPlugin(VaultPlugin.class);
+
         super.onCreate(savedInstanceState);
 
         // Konten digambar sampai ke area system bar (baik navigasi gestur maupun

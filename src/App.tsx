@@ -13,6 +13,15 @@ import {
   type PhoneFile,
 } from './lib/fileStorage'
 import { setSystemBarStyle } from './lib/systemBars'
+import {
+  canUseVault,
+  markVaultPrompted,
+  pickVaultFolder,
+  readVault,
+  wasVaultPrompted,
+  writeVault,
+  type Vault,
+} from './lib/vault'
 
 type Tab = 'home' | 'plans' | 'reminders'
 type PlanDocument = {
@@ -165,6 +174,17 @@ function Icon({ name, className = 'h-5 w-5' }: { name: string; className?: strin
         <path d="M12 10v4M12 17h.01" />
       </>
     ),
+    settings: (
+      <>
+        <circle cx="12" cy="12" r="3" />
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z" />
+      </>
+    ),
+    x: (
+      <>
+        <path d="M6 6l12 12M18 6 6 18" />
+      </>
+    ),
   }
   return (
     <svg
@@ -229,6 +249,12 @@ export default function App({ templates }: { templates: ServiceTemplate[] }) {
   const [showManualForm, setShowManualForm] = useState(false)
   const [toast, setToast] = useState('')
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [vault, setVault] = useState<Vault | null>(() => readVault())
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [vaultSetupOpen, setVaultSetupOpen] = useState(
+    () => canUseVault() && !readVault() && !wasVaultPrompted(),
+  )
+  const [choosingVault, setChoosingVault] = useState(false)
 
   useEffect(() => {
     try {
@@ -292,6 +318,31 @@ export default function App({ templates }: { templates: ServiceTemplate[] }) {
     setToast(message)
     if (toastTimer.current) clearTimeout(toastTimer.current)
     toastTimer.current = setTimeout(() => setToast(''), 2800)
+  }
+
+  const chooseVault = async () => {
+    setChoosingVault(true)
+    try {
+      const picked = await pickVaultFolder()
+      if (!picked) return
+      writeVault(picked)
+      setVault(picked)
+      markVaultPrompted()
+      setVaultSetupOpen(false)
+      notify(`Vault: ${picked.name}`)
+    } catch {
+      notify('Pemilihan folder dibatalkan')
+    } finally {
+      setChoosingVault(false)
+    }
+  }
+
+  const useDefaultFolder = () => {
+    writeVault(null)
+    markVaultPrompted()
+    setVault(null)
+    setVaultSetupOpen(false)
+    notify('File baru disimpan di Documents/BerkasSiap')
   }
 
   const filteredTemplates = useMemo(() => {
@@ -360,8 +411,12 @@ export default function App({ templates }: { templates: ServiceTemplate[] }) {
     const key = `${planId}:${documentId}`
     try {
       const saved = await saveToPhone(plan?.title ?? 'Checklist', key, file)
-      if (target?.file && target.file.path !== saved.path) {
-        await deleteFromPhone(target.file, key).catch(() => undefined)
+      const previous = target?.file
+      const sameFile = previous
+        ? (previous.uri ?? previous.path) === (saved.uri ?? saved.path)
+        : true
+      if (previous && !sameFile) {
+        await deleteFromPhone(previous, key).catch(() => undefined)
       }
       updatePlan(planId, (current) => ({
         ...current,
@@ -378,11 +433,13 @@ export default function App({ templates }: { templates: ServiceTemplate[] }) {
         ),
       }))
       notify(
-        isNativeApp()
-          ? `File tersimpan di ${
-              saved.storage === 'documents' ? 'Documents/BerkasSiap' : 'folder BerkasSiap'
-            }`
-          : 'File tersimpan aman di perangkat ini',
+        !isNativeApp()
+          ? 'File tersimpan aman di perangkat ini'
+          : saved.storage === 'vault'
+            ? `File tersimpan di vault ${saved.vault ?? ''}`.trim()
+            : saved.storage === 'documents'
+              ? 'File tersimpan di Documents/BerkasSiap'
+              : 'File tersimpan di folder BerkasSiap',
       )
     } catch {
       notify('File belum berhasil disimpan')
@@ -401,6 +458,10 @@ export default function App({ templates }: { templates: ServiceTemplate[] }) {
           ),
         }))
         notify('File hilang dari folder perangkat')
+        return
+      }
+      if (result === 'unsupported') {
+        notify('Belum ada aplikasi untuk membuka jenis file ini')
       }
     } catch {
       notify('File tidak dapat dibuka')
@@ -423,11 +484,11 @@ export default function App({ templates }: { templates: ServiceTemplate[] }) {
         plans,
       })
       notify(
-        isNativeApp()
-          ? `Cadangan disimpan di ${
-              result.storage === 'documents' ? 'Documents/' : ''
-            }${result.path}`
-          : `Cadangan diunduh: ${result.fileName}`,
+        !isNativeApp()
+          ? `Cadangan diunduh: ${result.fileName}`
+          : result.storage === 'vault'
+            ? `Cadangan disimpan di vault ${result.vault ?? ''}`.trim()
+            : `Cadangan disimpan di Documents/${result.path}`,
       )
     } catch {
       notify('Cadangan belum berhasil dibuat')
@@ -482,7 +543,11 @@ export default function App({ templates }: { templates: ServiceTemplate[] }) {
     let cancelled = false
 
     void CapacitorApp.addListener('backButton', () => {
-      if (showManualForm) {
+      if (settingsOpen) {
+        setSettingsOpen(false)
+      } else if (vaultSetupOpen) {
+        useDefaultFolder()
+      } else if (showManualForm) {
         setShowManualForm(false)
       } else if (selectedTemplate) {
         setSelectedTemplate(null)
@@ -502,7 +567,7 @@ export default function App({ templates }: { templates: ServiceTemplate[] }) {
       cancelled = true
       void listener?.remove()
     }
-  }, [showManualForm, selectedTemplate, selectedPlanId, tab])
+  }, [settingsOpen, vaultSetupOpen, showManualForm, selectedTemplate, selectedPlanId, tab])
 
   // Status bar transparan: pakai ikon terang di atas header gelap/oranye.
   const hasDarkHeader =
@@ -540,6 +605,8 @@ export default function App({ templates }: { templates: ServiceTemplate[] }) {
             updatePlan(selectedPlan.id, (plan) => ({ ...plan, reminder: !plan.reminder }))
           }
           onRemove={() => removePlan(selectedPlan)}
+          vaultName={vault?.name}
+          onOpenSettings={() => setSettingsOpen(true)}
         />
       ) : (
         <>
@@ -553,6 +620,7 @@ export default function App({ templates }: { templates: ServiceTemplate[] }) {
               onQuery={setQuery}
               onSelect={setSelectedTemplate}
               onOpenPlans={() => changeTab('plans')}
+              onOpenSettings={() => setSettingsOpen(true)}
               planCount={plans.length}
             />
           )}
@@ -563,6 +631,7 @@ export default function App({ templates }: { templates: ServiceTemplate[] }) {
               onManual={() => setShowManualForm(true)}
               onBrowse={() => changeTab('home')}
               onExport={exportPlans}
+              onOpenSettings={() => setSettingsOpen(true)}
             />
           )}
           {tab === 'reminders' && (
@@ -582,9 +651,22 @@ export default function App({ templates }: { templates: ServiceTemplate[] }) {
       {showManualForm && (
         <ManualPlanForm onClose={() => setShowManualForm(false)} onSubmit={submitManualPlan} />
       )}
+      {settingsOpen && (
+        <SettingsSheet
+          vault={vault}
+          picking={choosingVault}
+          onClose={() => setSettingsOpen(false)}
+          onPick={chooseVault}
+          onDefault={useDefaultFolder}
+          onExport={exportPlans}
+        />
+      )}
+      {vaultSetupOpen && (
+        <VaultSetup onPick={chooseVault} onSkip={useDefaultFolder} picking={choosingVault} />
+      )}
       {toast && (
         <div
-          className="fixed bottom-[calc(6rem_+_var(--app-safe-bottom))] left-1/2 z-[70] w-[calc(100%-40px)] max-w-[470px] -translate-x-1/2 rounded-2xl bg-[#17251f] px-5 py-3.5 text-center text-sm font-semibold text-white shadow-xl"
+          className="fixed bottom-[calc(6rem_+_var(--app-safe-bottom))] left-1/2 z-[90] w-[calc(100%-40px)] max-w-[470px] -translate-x-1/2 rounded-2xl bg-[#17251f] px-5 py-3.5 text-center text-sm font-semibold text-white shadow-xl"
           role="status"
         >
           {toast}
@@ -603,6 +685,7 @@ function Home({
   onQuery,
   onSelect,
   onOpenPlans,
+  onOpenSettings,
   planCount,
 }: {
   templates: ServiceTemplate[]
@@ -613,6 +696,7 @@ function Home({
   onQuery: (value: string) => void
   onSelect: (template: ServiceTemplate) => void
   onOpenPlans: () => void
+  onOpenSettings: () => void
   planCount: number
 }) {
   const featured = allTemplates.find((template) => template.featured) ?? allTemplates[0]
@@ -632,19 +716,29 @@ function Home({
               </p>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={onOpenPlans}
-            className="relative grid h-10 w-10 place-items-center rounded-full bg-white/15 backdrop-blur-sm"
-            aria-label="Buka berkas saya"
-          >
-            <Icon name="folder" className="h-5 w-5" />
-            {planCount > 0 && (
-              <span className="absolute -right-0.5 -top-0.5 grid h-4 min-w-4 place-items-center rounded-full bg-[#173c32] px-1 text-[9px] font-bold">
-                {planCount}
-              </span>
-            )}
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onOpenSettings}
+              className="grid h-10 w-10 place-items-center rounded-full bg-white/15 backdrop-blur-sm"
+              aria-label="Buka pengaturan"
+            >
+              <Icon name="settings" className="h-[18px] w-[18px]" />
+            </button>
+            <button
+              type="button"
+              onClick={onOpenPlans}
+              className="relative grid h-10 w-10 place-items-center rounded-full bg-white/15 backdrop-blur-sm"
+              aria-label="Buka berkas saya"
+            >
+              <Icon name="folder" className="h-5 w-5" />
+              {planCount > 0 && (
+                <span className="absolute -right-0.5 -top-0.5 grid h-4 min-w-4 place-items-center rounded-full bg-[#173c32] px-1 text-[9px] font-bold">
+                  {planCount}
+                </span>
+              )}
+            </button>
+          </div>
         </div>
         <div className="relative mt-8 max-w-[330px]">
           <p className="mb-2 text-xs font-bold uppercase tracking-[0.16em] text-[#5b2413]/70">
@@ -923,12 +1017,14 @@ function Plans({
   onManual,
   onBrowse,
   onExport,
+  onOpenSettings,
 }: {
   plans: Plan[]
   onSelect: (id: string) => void
   onManual: () => void
   onBrowse: () => void
   onExport: () => void
+  onOpenSettings: () => void
 }) {
   return (
     <main className="min-h-dvh px-5 pb-[calc(8rem_+_var(--app-safe-bottom))] pt-[calc(1.75rem_+_var(--app-safe-top))]">
@@ -940,14 +1036,24 @@ function Plans({
           <h1 className="mt-1 text-[30px] font-extrabold tracking-[-0.045em]">Berkas Saya</h1>
           <p className="mt-1 text-sm text-[#7c8580]">Pantau semua persiapanmu di sini.</p>
         </div>
-        <button
-          type="button"
-          onClick={onManual}
-          className="grid h-12 w-12 place-items-center rounded-2xl bg-[#f26438] text-white shadow-lg shadow-[#f26438]/20"
-          aria-label="Buat checklist manual"
-        >
-          <Icon name="plus" className="h-6 w-6" />
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={onOpenSettings}
+            className="grid h-11 w-11 place-items-center rounded-2xl border border-[#e4ded4] bg-white text-[#5f6964]"
+            aria-label="Buka pengaturan"
+          >
+            <Icon name="settings" className="h-[18px] w-[18px]" />
+          </button>
+          <button
+            type="button"
+            onClick={onManual}
+            className="grid h-12 w-12 place-items-center rounded-2xl bg-[#f26438] text-white shadow-lg shadow-[#f26438]/20"
+            aria-label="Buat checklist manual"
+          >
+            <Icon name="plus" className="h-6 w-6" />
+          </button>
+        </div>
       </div>
 
       <div className="mt-5 flex items-start gap-3 rounded-[20px] border border-[#e4ded4] bg-[#fffdf9] p-4">
@@ -1068,6 +1174,8 @@ function PlanDetail({
   onDeadline,
   onReminder,
   onRemove,
+  vaultName,
+  onOpenSettings,
 }: {
   plan: Plan
   onBack: () => void
@@ -1077,6 +1185,8 @@ function PlanDetail({
   onDeadline: (value: string) => void
   onReminder: () => void
   onRemove: () => void
+  vaultName?: string
+  onOpenSettings: () => void
 }) {
   const progress = progressOf(plan)
   return (
@@ -1235,14 +1345,29 @@ function PlanDetail({
 
       <section className="mx-5 mt-7 flex items-start gap-3 rounded-[20px] bg-[#fff0e8] p-4">
         <Icon name="lock" className="mt-0.5 h-5 w-5 shrink-0 text-[#d65a34]" />
-        <p className="text-xs leading-5 text-[#754333]">
-          File disimpan di folder{' '}
-          <span className="font-bold">
-            {isNativeApp() ? 'Documents/BerkasSiap' : 'penyimpanan browser'}
-          </span>{' '}
-          perangkat ini, bukan di server. Data hanya ada di perangkat, jadi buat cadangan sebelum
-          menghapus folder atau data browser.
-        </p>
+        <div className="min-w-0">
+          <p className="text-xs leading-5 text-[#754333]">
+            File disimpan di{' '}
+            <span className="font-bold">
+              {!isNativeApp()
+                ? 'penyimpanan browser'
+                : vaultName
+                  ? `vault ${vaultName}`
+                  : 'folder Documents/BerkasSiap'}
+            </span>{' '}
+            perangkat ini, bukan di server. Data hanya ada di perangkat, jadi buat cadangan sebelum
+            menghapus folder atau data browser.
+          </p>
+          {isNativeApp() && (
+            <button
+              type="button"
+              onClick={onOpenSettings}
+              className="mt-2 text-[10px] font-extrabold text-[#c9512c] underline underline-offset-2"
+            >
+              Ganti folder penyimpanan
+            </button>
+          )}
+        </div>
       </section>
     </main>
   )
@@ -1453,6 +1578,206 @@ function ManualPlanForm({
           Buat checklist
         </button>
       </form>
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/* Vault & pengaturan                                                  */
+/* ------------------------------------------------------------------ */
+
+function VaultSetup({
+  onPick,
+  onSkip,
+  picking,
+}: {
+  onPick: () => void
+  onSkip: () => void
+  picking: boolean
+}) {
+  const points = [
+    'File masuk ke folder pilihanmu, bukan ke server.',
+    'Bisa diganti kapan saja, seperti vault di Obsidian.',
+    'Data tetap hanya ada di perangkat ini.',
+  ]
+  return (
+    <div className="fixed inset-0 z-[85] overflow-y-auto bg-[#f8f5ef] px-6 pb-[calc(2rem_+_var(--app-safe-bottom))] pt-[calc(2rem_+_var(--app-safe-top))]">
+      <div className="mx-auto flex min-h-full w-full max-w-[420px] flex-col justify-center py-6">
+        <div className="relative mx-auto grid h-24 w-24 place-items-center rounded-[30px] bg-[#173c32] text-[#f8c85b] shadow-[0_16px_40px_rgba(23,60,50,0.22)]">
+          <Icon name="folder" className="h-11 w-11" />
+          <span className="absolute -right-2 -top-2 grid h-9 w-9 place-items-center rounded-xl bg-[#f26438] text-white">
+            <Icon name="shield" className="h-4 w-4" />
+          </span>
+        </div>
+
+        <p className="mt-8 text-center text-[10px] font-extrabold uppercase tracking-[0.17em] text-[#ef6335]">
+          Langkah pertama
+        </p>
+        <h1 className="mt-2 text-center text-[30px] font-extrabold leading-tight tracking-[-0.045em]">
+          Pilih vault kamu
+        </h1>
+        <p className="mx-auto mt-3 max-w-[320px] text-center text-sm leading-6 text-[#7b847f]">
+          Vault adalah folder di penyimpanan HP tempat semua file dokumenmu disimpan. Kamu bisa
+          menggantinya kapan saja lewat Pengaturan.
+        </p>
+
+        <div className="mt-7 space-y-2.5">
+          {points.map((text) => (
+            <div
+              key={text}
+              className="flex items-start gap-3 rounded-[18px] border border-[#e5e1d9] bg-white px-4 py-3"
+            >
+              <span className="mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-full bg-[#e8f3ea] text-[#2f7350]">
+                <Icon name="check" className="h-3.5 w-3.5" />
+              </span>
+              <p className="text-xs leading-5 text-[#5f6964]">{text}</p>
+            </div>
+          ))}
+        </div>
+
+        <button
+          type="button"
+          onClick={onPick}
+          disabled={picking}
+          className="mt-8 flex h-14 w-full items-center justify-center gap-2 rounded-2xl bg-[#f26438] text-sm font-extrabold text-white shadow-[0_10px_24px_rgba(242,100,56,0.25)] disabled:opacity-60"
+        >
+          <Icon name="folder" className="h-5 w-5" />
+          {picking ? 'Membuka pemilih folder…' : 'Pilih folder penyimpanan'}
+        </button>
+        <button
+          type="button"
+          onClick={onSkip}
+          disabled={picking}
+          className="mt-4 text-center text-xs font-bold text-[#7b847f] disabled:opacity-60"
+        >
+          Lewati dulu, pakai Documents/BerkasSiap
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function SettingsSheet({
+  vault,
+  picking,
+  onClose,
+  onPick,
+  onDefault,
+  onExport,
+}: {
+  vault: Vault | null
+  picking: boolean
+  onClose: () => void
+  onPick: () => void
+  onDefault: () => void
+  onExport: () => void
+}) {
+  return (
+    <div className="fixed inset-0 z-[80] flex items-end justify-center bg-[#101b17]/45 backdrop-blur-[2px]">
+      <button
+        type="button"
+        onClick={onClose}
+        className="absolute inset-0 h-full w-full cursor-default"
+        aria-label="Tutup pengaturan"
+      />
+      <div className="relative z-10 max-h-[88dvh] w-full max-w-[520px] overflow-y-auto rounded-t-[28px] bg-[#f8f5ef] px-5 pb-[calc(1.5rem_+_var(--app-safe-bottom))] pt-4 shadow-2xl">
+        <div className="mx-auto h-1.5 w-11 rounded-full bg-[#d9d4cb]" />
+        <div className="mt-4 flex items-start justify-between">
+          <div>
+            <p className="text-[10px] font-extrabold uppercase tracking-[0.17em] text-[#ef6335]">
+              Preferensi
+            </p>
+            <h2 className="mt-1 text-[24px] font-extrabold tracking-[-0.04em]">Pengaturan</h2>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="grid h-10 w-10 place-items-center rounded-full bg-[#ece8e0] text-[#5f6964]"
+            aria-label="Tutup"
+          >
+            <Icon name="x" className="h-5 w-5" />
+          </button>
+        </div>
+
+        {canUseVault() ? (
+          <>
+            <div className="mt-6 flex items-center justify-between">
+              <h3 className="text-xs font-extrabold">Vault penyimpanan</h3>
+              <span className="rounded-full bg-[#e8f3ea] px-2.5 py-1 text-[9px] font-bold uppercase tracking-wider text-[#2f7350]">
+                {vault ? 'Aktif' : 'Bawaan'}
+              </span>
+            </div>
+            <div className="mt-3 rounded-[22px] border border-[#e4ded4] bg-white p-4">
+              <div className="flex items-center gap-3">
+                <div className="grid h-11 w-11 shrink-0 place-items-center rounded-[15px] bg-[#e8f1f7] text-[#286581]">
+                  <Icon name="folder" className="h-5 w-5" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-extrabold">{vault?.name ?? 'Belum dipilih'}</p>
+                  <p className="mt-0.5 text-[11px] leading-4 text-[#7b847f]">
+                    {vault
+                      ? 'Semua file baru disimpan di folder ini.'
+                      : 'File baru disimpan di Documents/BerkasSiap.'}
+                  </p>
+                </div>
+              </div>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={onPick}
+                  disabled={picking}
+                  className="rounded-xl bg-[#173c32] px-3.5 py-2.5 text-[10px] font-extrabold text-white disabled:opacity-60"
+                >
+                  {picking ? 'Membuka…' : vault ? 'Ganti folder' : 'Pilih folder'}
+                </button>
+                {vault && (
+                  <button
+                    type="button"
+                    onClick={onDefault}
+                    disabled={picking}
+                    className="rounded-xl border border-[#dedbd3] bg-white px-3.5 py-2.5 text-[10px] font-extrabold text-[#5f6964] disabled:opacity-60"
+                  >
+                    Pakai folder bawaan
+                  </button>
+                )}
+              </div>
+            </div>
+            <div className="mt-3 flex gap-2.5 rounded-[18px] bg-[#fff0e8] p-3.5">
+              <Icon name="warning" className="mt-0.5 h-4 w-4 shrink-0 text-[#d65a34]" />
+              <p className="text-[11px] leading-5 text-[#754333]">
+                Jangan menghapus atau memindahkan folder vault dari aplikasi Files. Jika folder
+                hilang, file lama akan ditandai “File hilang”.
+              </p>
+            </div>
+          </>
+        ) : (
+          <div className="mt-6 rounded-[22px] border border-[#e4ded4] bg-white p-4 text-xs leading-5 text-[#7b847f]">
+            Di browser, file disimpan di penyimpanan browser (IndexedDB). Vault hanya tersedia di
+            aplikasi Android.
+          </div>
+        )}
+
+        <div className="mt-6">
+          <h3 className="text-xs font-extrabold">Cadangan data</h3>
+          <div className="mt-3 rounded-[22px] border border-[#e4ded4] bg-white p-4">
+            <p className="text-[11px] leading-5 text-[#7b847f]">
+              Data checklist hanya ada di perangkat ini. Ekspor salinan JSON (tanpa isi file) secara
+              berkala agar tidak hilang.
+            </p>
+            <button
+              type="button"
+              onClick={onExport}
+              className="mt-3 rounded-xl bg-[#173c32] px-3.5 py-2 text-[10px] font-extrabold text-white"
+            >
+              Ekspor cadangan
+            </button>
+          </div>
+        </div>
+
+        <p className="mt-6 text-center text-[10px] font-semibold text-[#9ca49f]">
+          BerkasSiap • sepenuhnya offline
+        </p>
+      </div>
     </div>
   )
 }
