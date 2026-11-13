@@ -330,8 +330,13 @@ export default function App({ templates }: { templates: ServiceTemplate[] }) {
       markVaultPrompted()
       setVaultSetupOpen(false)
       notify(`Vault: ${picked.name}`)
-    } catch {
-      notify('Pemilihan folder dibatalkan')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : ''
+      notify(
+        message.includes('not_writable')
+          ? 'Folder ini tidak bisa ditulis. Pilih folder lain.'
+          : 'Pemilihan folder dibatalkan',
+      )
     } finally {
       setChoosingVault(false)
     }

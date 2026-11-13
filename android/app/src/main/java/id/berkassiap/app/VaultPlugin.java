@@ -78,7 +78,12 @@ public class VaultPlugin extends Plugin {
         }
 
         DocumentFile folder = DocumentFile.fromTreeUri(getContext(), uri);
-        String name = folder != null ? folder.getName() : null;
+        if (folder == null || !canWriteInto(folder)) {
+            call.reject("not_writable");
+            return;
+        }
+
+        String name = folder.getName();
         if (name == null || name.isEmpty()) {
             name = uri.getLastPathSegment();
         }
@@ -285,6 +290,27 @@ public class VaultPlugin extends Plugin {
                 call.reject("open_failed", error);
             }
         });
+    }
+
+    /** Pastikan folder benar-benar bisa ditulis sebelum dijadikan vault. */
+    private boolean canWriteInto(DocumentFile folder) {
+        if (!folder.canWrite()) {
+            return false;
+        }
+        try {
+            DocumentFile probe = folder.createFile("text/plain", ".berkassiap-probe");
+            if (probe == null) {
+                return false;
+            }
+            try {
+                probe.delete();
+            } catch (Exception ignored) {
+                // Berkas uji gagal dihapus: bukan masalah untuk penyimpanan.
+            }
+            return true;
+        } catch (Exception error) {
+            return false;
+        }
     }
 
     private Uri toContentUri(String value) {
