@@ -1,0 +1,21 @@
+# Dependensi
+node_modules/
+
+# Hasil build web
+dist/
+
+# Berkas lokal/editor
+.DS_Store
+*.local
+*.log
+.env
+.env.*
+
+# Android: tetap commit folder android/, hanya abaikan hasil build.
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+android/captures/
+*.iml
