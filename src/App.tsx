@@ -570,9 +570,11 @@ export default function App({ templates }: { templates: ServiceTemplate[] }) {
   }, [settingsOpen, vaultSetupOpen, showManualForm, selectedTemplate, selectedPlanId, tab])
 
   // Status bar transparan: pakai ikon terang di atas header gelap/oranye.
+  // Layar pertama (vault) berlatar terang, jadi ikonnya harus gelap.
   const hasDarkHeader =
-    Boolean(selectedTemplate || selectedPlanId) ||
-    (!selectedTemplate && !selectedPlanId && tab === 'home')
+    !vaultSetupOpen &&
+    (Boolean(selectedTemplate || selectedPlanId) ||
+      (!selectedTemplate && !selectedPlanId && tab === 'home'))
 
   useEffect(() => {
     void setSystemBarStyle(hasDarkHeader ? 'DARK' : 'LIGHT')

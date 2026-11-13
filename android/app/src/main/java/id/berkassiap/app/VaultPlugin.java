@@ -60,11 +60,21 @@ public class VaultPlugin extends Plugin {
         }
 
         Uri uri = data.getData();
+        // Ambil izin permanen sesuai flag yang benar-benar diberikan penyedia.
+        int takeFlags = data.getFlags() & READ_WRITE_FLAGS;
+        if (takeFlags == 0) {
+            takeFlags = READ_WRITE_FLAGS;
+        }
         try {
-            getContext().getContentResolver().takePersistableUriPermission(uri, READ_WRITE_FLAGS);
-        } catch (SecurityException ignored) {
-            // Sebagian penyedia hanya memberi izin sementara; masih bisa dipakai
-            // sampai aplikasi ditutup.
+            getContext().getContentResolver().takePersistableUriPermission(uri, takeFlags);
+        } catch (SecurityException firstError) {
+            try {
+                getContext().getContentResolver()
+                        .takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            } catch (SecurityException ignored) {
+                // Penyedia hanya memberi izin sementara; masih bisa dipakai
+                // sampai aplikasi ditutup.
+            }
         }
 
         DocumentFile folder = DocumentFile.fromTreeUri(getContext(), uri);
