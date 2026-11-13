@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { App as CapacitorApp } from '@capacitor/app'
+import type { PluginListenerHandle } from '@capacitor/core'
 import type { ServiceTemplate } from './types'
 import {
   deleteFromPhone,
@@ -10,6 +12,7 @@ import {
   saveToPhone,
   type PhoneFile,
 } from './lib/fileStorage'
+import { setSystemBarStyle } from './lib/systemBars'
 
 type Tab = 'home' | 'plans' | 'reminders'
 type PlanDocument = {
@@ -471,6 +474,45 @@ export default function App({ templates }: { templates: ServiceTemplate[] }) {
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
+  // Tombol/gesture kembali Android: tutup lapisan yang terbuka dulu, baru keluar.
+  useEffect(() => {
+    if (!isNativeApp()) return
+
+    let listener: PluginListenerHandle | undefined
+    let cancelled = false
+
+    void CapacitorApp.addListener('backButton', () => {
+      if (showManualForm) {
+        setShowManualForm(false)
+      } else if (selectedTemplate) {
+        setSelectedTemplate(null)
+      } else if (selectedPlanId) {
+        setSelectedPlanId(null)
+      } else if (tab !== 'home') {
+        changeTab('home')
+      } else {
+        void CapacitorApp.exitApp()
+      }
+    }).then((handle) => {
+      if (cancelled) void handle.remove()
+      else listener = handle
+    })
+
+    return () => {
+      cancelled = true
+      void listener?.remove()
+    }
+  }, [showManualForm, selectedTemplate, selectedPlanId, tab])
+
+  // Status bar transparan: pakai ikon terang di atas header gelap/oranye.
+  const hasDarkHeader =
+    Boolean(selectedTemplate || selectedPlanId) ||
+    (!selectedTemplate && !selectedPlanId && tab === 'home')
+
+  useEffect(() => {
+    void setSystemBarStyle(hasDarkHeader ? 'DARK' : 'LIGHT')
+  }, [hasDarkHeader])
+
   return (
     <div className="mx-auto min-h-dvh w-full max-w-[520px] overflow-x-hidden bg-[#f8f5ef] text-[#17251f] shadow-[0_0_60px_rgba(23,37,31,0.10)]">
       {selectedTemplate ? (
@@ -542,7 +584,7 @@ export default function App({ templates }: { templates: ServiceTemplate[] }) {
       )}
       {toast && (
         <div
-          className="fixed bottom-24 left-1/2 z-[70] w-[calc(100%-40px)] max-w-[470px] -translate-x-1/2 rounded-2xl bg-[#17251f] px-5 py-3.5 text-center text-sm font-semibold text-white shadow-xl"
+          className="fixed bottom-[calc(6rem_+_var(--app-safe-bottom))] left-1/2 z-[70] w-[calc(100%-40px)] max-w-[470px] -translate-x-1/2 rounded-2xl bg-[#17251f] px-5 py-3.5 text-center text-sm font-semibold text-white shadow-xl"
           role="status"
         >
           {toast}
@@ -575,8 +617,8 @@ function Home({
 }) {
   const featured = allTemplates.find((template) => template.featured) ?? allTemplates[0]
   return (
-    <main className="pb-28">
-      <section className="relative overflow-hidden rounded-b-[36px] bg-[#f56a3d] px-5 pb-7 pt-6 text-white">
+    <main className="pb-[calc(7rem_+_var(--app-safe-bottom))]">
+      <section className="relative overflow-hidden rounded-b-[36px] bg-[#f56a3d] px-5 pb-7 pt-[calc(1.5rem_+_var(--app-safe-top))] text-white">
         <div className="absolute -right-10 top-4 h-40 w-40 rounded-full border-[30px] border-white/10" />
         <div className="relative flex items-center justify-between">
           <div className="flex items-center gap-2.5">
@@ -767,8 +809,8 @@ function TemplateDetail({
 }) {
   const style = accentStyles[template.accent]
   return (
-    <main className="min-h-dvh pb-28">
-      <header className="relative overflow-hidden rounded-b-[34px] bg-[#173c32] px-5 pb-7 pt-5 text-white">
+    <main className="min-h-dvh pb-[calc(7rem_+_var(--app-safe-bottom))]">
+      <header className="relative overflow-hidden rounded-b-[34px] bg-[#173c32] px-5 pb-7 pt-[calc(1.25rem_+_var(--app-safe-top))] text-white">
         <div className="absolute -right-12 -top-8 h-44 w-44 rounded-full border-[32px] border-white/5" />
         <button
           type="button"
@@ -861,7 +903,7 @@ function TemplateDetail({
         </section>
       )}
 
-      <div className="fixed inset-x-0 bottom-0 z-30 mx-auto max-w-[520px] border-t border-[#e8e2d8] bg-[#fffdf9]/95 p-4 backdrop-blur-xl">
+      <div className="fixed inset-x-0 bottom-0 z-30 mx-auto max-w-[520px] border-t border-[#e8e2d8] bg-[#fffdf9]/95 p-4 pb-[calc(1rem_+_var(--app-safe-bottom))] backdrop-blur-xl">
         <button
           type="button"
           onClick={onStart}
@@ -889,7 +931,7 @@ function Plans({
   onExport: () => void
 }) {
   return (
-    <main className="min-h-dvh px-5 pb-32 pt-7">
+    <main className="min-h-dvh px-5 pb-[calc(8rem_+_var(--app-safe-bottom))] pt-[calc(1.75rem_+_var(--app-safe-top))]">
       <div className="flex items-end justify-between">
         <div>
           <p className="text-[10px] font-extrabold uppercase tracking-[0.17em] text-[#ef6335]">
@@ -1038,8 +1080,8 @@ function PlanDetail({
 }) {
   const progress = progressOf(plan)
   return (
-    <main className="min-h-dvh pb-12">
-      <header className="rounded-b-[34px] bg-[#173c32] px-5 pb-7 pt-5 text-white">
+    <main className="min-h-dvh pb-[calc(3rem_+_var(--app-safe-bottom))]">
+      <header className="rounded-b-[34px] bg-[#173c32] px-5 pb-7 pt-[calc(1.25rem_+_var(--app-safe-top))] text-white">
         <div className="flex items-center justify-between">
           <button
             type="button"
@@ -1219,7 +1261,7 @@ function Reminders({
     .filter((plan) => plan.deadline)
     .sort((a, b) => a.deadline.localeCompare(b.deadline))
   return (
-    <main className="min-h-dvh px-5 pb-32 pt-7">
+    <main className="min-h-dvh px-5 pb-[calc(8rem_+_var(--app-safe-bottom))] pt-[calc(1.75rem_+_var(--app-safe-top))]">
       <p className="text-[10px] font-extrabold uppercase tracking-[0.17em] text-[#ef6335]">
         Jangan sampai terlewat
       </p>
@@ -1314,7 +1356,7 @@ function BottomNav({ current, onChange }: { current: Tab; onChange: (tab: Tab) =
     { tab: 'reminders', label: 'Pengingat', icon: 'bell' },
   ]
   return (
-    <nav className="fixed inset-x-0 bottom-0 z-40 mx-auto flex h-[82px] max-w-[520px] items-start justify-around border-t border-[#e6e1d7] bg-[#fffdf9]/95 px-5 pt-3 backdrop-blur-xl">
+    <nav className="fixed inset-x-0 bottom-0 z-40 mx-auto flex h-[calc(82px_+_var(--app-safe-bottom))] max-w-[520px] items-start justify-around border-t border-[#e6e1d7] bg-[#fffdf9]/95 px-5 pt-3 pb-[var(--app-safe-bottom)] backdrop-blur-xl">
       {items.map((item) => (
         <button
           key={item.tab}
@@ -1355,7 +1397,7 @@ function ManualPlanForm({
       />
       <form
         onSubmit={onSubmit}
-        className="relative z-10 max-h-[90dvh] w-full max-w-[520px] overflow-y-auto rounded-t-[32px] bg-[#fffdf9] px-5 pb-8 pt-4"
+        className="relative z-10 max-h-[90dvh] w-full max-w-[520px] overflow-y-auto rounded-t-[32px] bg-[#fffdf9] px-5 pb-[calc(2rem_+_var(--app-safe-bottom))] pt-4"
       >
         <div className="mx-auto h-1.5 w-10 rounded-full bg-[#d7d4cd]" />
         <div className="mt-6 flex items-start justify-between">

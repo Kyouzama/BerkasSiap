@@ -7,6 +7,14 @@ const config: CapacitorConfig = {
   android: {
     allowMixedContent: false,
   },
+  plugins: {
+    // Konten digambar sampai ke area system bar; ruang aman diatur lewat CSS.
+    SystemBars: {
+      style: 'DARK',
+      insetsHandling: 'css',
+      initialViewportFitValueHint: 'cover',
+    },
+  },
 }
 
 export default config
