@@ -109,7 +109,7 @@ public class VaultPlugin extends Plugin {
         }
 
         DocumentFile root = DocumentFile.fromTreeUri(getContext(), Uri.parse(treeUri));
-        if (root == null || !root.canWrite()) {
+        if (root == null) {
             call.reject("vault_unavailable");
             return;
         }
@@ -294,9 +294,6 @@ public class VaultPlugin extends Plugin {
 
     /** Pastikan folder benar-benar bisa ditulis sebelum dijadikan vault. */
     private boolean canWriteInto(DocumentFile folder) {
-        if (!folder.canWrite()) {
-            return false;
-        }
         try {
             DocumentFile probe = folder.createFile("text/plain", ".berkassiap-probe");
             if (probe == null) {
